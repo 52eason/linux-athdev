@@ -7,8 +7,8 @@
 #include ../../../common.mak
 
 
-CFLAGS = ${INCDIR}
-#CFLAGS += -I../h
+CFLAGS = ${INCDIR} -D_X86_
+#CFLAGS += -I../h 
 
 LDFLAGS += ${LDDIR} -lpthread
 #LDFLAGS += -lglueos -lsqlite3 -lccmi -lrt -lsqlextlib

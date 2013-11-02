@@ -18,6 +18,8 @@
   
 #include <stdio.h> 
 #include <sys/socket.h> 
+#include <sys/ioctl.h>
+#include <linux/if.h>
 #include <netinet/in.h> 
 #include <arpa/inet.h>
 #include <string.h>
@@ -28,7 +30,14 @@
   #include <sqlextlib/sql_ext_lib.h>
 #endif
 
-#define VERSION				V1.1
+#define VERSION				"V1.1"
+
+#ifdef _X86_
+  #define LANIF				"eth1"
+#else
+  #define LANIF				"br0"
+#endif
+
 #define MAX_STRING_SIZE			128
 #define WEB_DB_MAX_RETRIES              100
 #define WEB_NUM_MILLIS_TO_SLEEP         100
@@ -113,7 +122,7 @@ int main(int argc, char ** argv)
                 debug = 1;
                 break;
             case 'v':
-                snprintf(sysCmd, sizeof(sysCmd), "Attachded device utility %s.\n", "V1.1");
+                snprintf(sysCmd, sizeof(sysCmd), "Attachded device utility %s.\n", VERSION);
 		PLATFORM_printf(sysCmd);
                 break;
 	    }
@@ -156,31 +165,37 @@ int isARPReply(char *ipaddr)
     int res = -1;
     char *pLanIpAddr = NULL;
     char *pLanMACAddr = NULL;
+    char ethIP[16] = "";
+    char ethMAC[18] = "";
 
-    //TODO: fix crash later. mark it to avoid R2 crash
-    return 0;
+    int fd;
+    int i; 
+    struct ifreq ifr;
+    
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
 
-#ifdef _SQLITE_    
-    sql_getValue(pWebDb, "LAN", "IpAddress", 1, &pLanIpAddr);
-    sql_getValue(pWebDb, "MacTable", "MacAddress", 1, &pLanMACAddr);
-    //printf("%s, %s, %s\n", __func__, pLanIpAddr, pLanMACAddr);
-    res = send_arp_request(pLanIpAddr, pLanMACAddr, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
-   // printf("arp_result=%d\n", res);
-#endif
+    /* I want to get an IPv4 IP address */
+    ifr.ifr_addr.sa_family = AF_INET;
 
-    if (!res)
-    {
-  //      if (pLanIpAddr) free(pLanIpAddr);
-  //      if (pLanMACAddr) free(pLanMACAddr);
-        return res;
-    }
-        
+    /* I want IP address attached to "eth0" */
+    strncpy(ifr.ifr_name, LANIF, IFNAMSIZ-1);
+    ioctl(fd, SIOCGIFADDR, &ifr);
+ 
+    printf("%s\n", inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));    
+    
+    snprintf(ethIP, sizeof(ethIP),"%s", inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
+    snprintf(ethMAC, sizeof(ethMAC), "%02X:%02X:%02X:%02X:%02X:%02X", 
+	    (unsigned char) ifr.ifr_addr.sa_data[0], 
+	    (unsigned char) ifr.ifr_addr.sa_data[1],
+	    (unsigned char) ifr.ifr_addr.sa_data[2], 
+	    (unsigned char) ifr.ifr_addr.sa_data[3],
+	    (unsigned char) ifr.ifr_addr.sa_data[4], 
+	    (unsigned char) ifr.ifr_addr.sa_data[5]);
+
+    close(fd);
+   
     PLATFORM_SleepMSec(500);  // According to spec, wait 500ms then resend if first arp doesn't reply
-
-    res = send_arp_request(pLanIpAddr, pLanMACAddr, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
-
-//    if (pLanIpAddr) free(pLanIpAddr);
-//    if (pLanMACAddr) free(pLanMACAddr);
+    res = send_arp_request(ethMAC, ethMAC, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
     return res;  
 }
 
@@ -337,6 +352,8 @@ int scanARPtable()
     */
     if ((f = fopen("/proc/net/arp", "r")) != NULL) 
         {
+	  
+	
         while (fgets(s, sizeof(s), f)) 
             {
             if ( 0 == just_count)
@@ -344,7 +361,7 @@ int scanARPtable()
                 if (sscanf(s, "%15s %*s 0x%X %17s %*s %16s", ip, &flags, mac, dev) != 4) continue;
                 if ((strlen(mac) != 17) || (strcmp(mac, "00:00:00:00:00:00") == 0)) continue;
                 if (flags == 0) continue;
-                if (0 != strncmp("br0", dev, 3)) continue;
+                if (0 != strncmp(LANIF, dev, 3)) continue;
 
                 printf("['%s','%s','%s']\n", ip, mac, dev);
                 //  printf("mac:%s is %s\n", mac, iswifi(mac));
@@ -353,13 +370,17 @@ int scanARPtable()
                 //CliIF: wired/radio1/guest1/radio2/guest2
                 //sqlite+ /tmp/system.db "insert into AttachedDevice (AttchedType, IpAddress, MacAddress, DeviceName) values ('$CliIF', '"$2"', '"$3"', '"$1"')";
 
+		printf("!!!!!!!!!!!!%d\n", isARPReply(ip));
                 if (!isARPReply(ip))
                     {
+#ifdef _SQLITE_		      
                     snprintf(sysCmd, sizeof(sysCmd), "sqlite3 /tmp/system.db \"insert into attacheddevice  (AttchedType, IpAddress, MacAddress, DeviceName) values ('%s', '%s', '%s', '%s')\"", 
                         mac2if(mac), ip, mac, ip2host(ip));
-                    //  printf("%s\n", sysCmd);
                     system(sysCmd);
-                    }  
+#else
+	            printf("%s(%s) exist.\n", ip, ip2host(ip));	    
+#endif
+		    }  
                 else
                     printf("%s didn't exist anymore...\n", ip);  
                 }
