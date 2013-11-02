@@ -23,3 +23,4 @@ void PLATFORM_SleepMSec(unsigned int uiMilliSecond);
 int PLATFORM_ThreadCreate(struct platformThread_t* tPlatform);//, void *(*pFnStartRoutine)(void *), void *pThreadParm);
 int PLATFORM_ThreadCancel(struct platformThread_t* tPlatform);
 int PLATFORM_FileDownload(char *pszDownloadTarget, char *pszUserName, char *pszPasswd);
+void PLATFORM_printf(char *msg);

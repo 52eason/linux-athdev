@@ -22,19 +22,25 @@
 #include <arpa/inet.h>
 #include <string.h>
 
-#include <sqlite3.h>
-#include <sqliteExtLib.h>
-#include <sqlextlib/sql_ext_lib.h>
+#ifdef _SQLITE_
+  #include <sqlite3.h>
+  #include <sqliteExtLib.h>
+  #include <sqlextlib/sql_ext_lib.h>
+#endif
 
-#define WEB_DB_MAX_RETRIES                  100
-#define WEB_NUM_MILLIS_TO_SLEEP             100
-#define POST_BUF_SIZE                       30000
+#define VERSION				V1.1
+#define MAX_STRING_SIZE			128
+#define WEB_DB_MAX_RETRIES              100
+#define WEB_NUM_MILLIS_TO_SLEEP         100
+#define POST_BUF_SIZE                   30000
 
 unsigned char hostname[64];
 
-static SQLITE_BUSY_HANDLER_ARG bhWebArg = {"", WEB_DB_MAX_RETRIES, WEB_NUM_MILLIS_TO_SLEEP};
-char * pDBFile;
-sqlite3 * pWebDb;
+#ifdef _SQLITE_
+  static SQLITE_BUSY_HANDLER_ARG bhWebArg = {"", WEB_DB_MAX_RETRIES, WEB_NUM_MILLIS_TO_SLEEP};
+  char * pDBFile;
+  sqlite3 * pWebDb;
+#endif
 
 int just_count = 0;
 int debug = 0;
@@ -45,13 +51,14 @@ static int ip2name(char *ip);
 
 void scanAttachedDevice();
 
-static int scanDhcpLease();
-static int scanWiFiAssoc();
-static int scanARPtable();
-static int isARPReply(char *ipaddr);
+int scanDhcpLease();
+int scanWiFiAssoc();
+int scanARPtable();
+int isARPReply(char *ipaddr);
 
 int webOpenDB (char * dbfile)
 {
+#ifdef _SQLITE_
     if (sqlite3_open (dbfile, &pWebDb) != SQLITE_OK)
     {
         printf ("unable to open the DB file %s\n", dbfile);
@@ -66,17 +73,19 @@ int webOpenDB (char * dbfile)
         printf("init pWebDb failed\n");
         return -1;
     }
-    return 0;
+#endif
+    return 0;    
 }
 
 void webCloseDb ()
 {
+ #ifdef _SQLITE_
     if (pWebDb)
         sqlite3_close (pWebDb);
     else
         printf("close db failed\n");
 
-    return;
+#endif
 }
 /**
  * @brief main function
@@ -88,46 +97,51 @@ void webCloseDb ()
  */
 int main(int argc, char ** argv)
 {
-    char * pLanIpAddr =NULL;
+    char sysCmd[MAX_STRING_SIZE];
     int c;
 
-        if(argc)
+    if(argc)
     {
         while ((c = getopt(argc, argv, "lvds")) != -1)
         {
-            switch (c) {
+            switch (c) 
+	    {
             case 'l':
                 just_count = 1;
-                //printf("just count!\n");
                 break;
             case 'd':
                 debug = 1;
-               // printf("just debug!\n");
                 break;
             case 'v':
-                printf("Attachded device utility v1.0.\n");
+                snprintf(sysCmd, sizeof(sysCmd), "Attachded device utility %s.\n", "V1.1");
+		PLATFORM_printf(sysCmd);
                 break;
-                    }
-            }
+	    }
+	}
     }
 
+#ifdef _SQLITE_
     if ( 0 == just_count )
     {
         if (webOpenDB("/tmp/system.db")<0)
             return -1;
     }
+    snprintf(sysCmd, sizeof(sysCmd), "sqlite3 /tmp/system.db \"delete from attacheddevice\"");
+    system(sysCmd);    
+#endif    
 
-    system("touch /tmp/attaching");
+//    system("touch /tmp/attaching");
+    
+    
     scanAttachedDevice();
 
+#ifdef _SQLITE_    
     if ( 0 == just_count )
     {
         webCloseDb(); 
     }
-    remove("/tmp/attaching");
-
-    if (pLanIpAddr) free(pLanIpAddr);
-
+#endif    
+//    remove("/tmp/attaching");
     return 0;
 }
 
@@ -137,7 +151,7 @@ int main(int argc, char ** argv)
  * our ARP packet. Wait 3 seconds to collect all replies. If any client doesn’t reply, then remove 
  * it from our attach device table.
  */
-static int isARPReply(char *ipaddr)
+int isARPReply(char *ipaddr)
 {
     int res = -1;
     char *pLanIpAddr = NULL;
@@ -146,17 +160,18 @@ static int isARPReply(char *ipaddr)
     //TODO: fix crash later. mark it to avoid R2 crash
     return 0;
 
+#ifdef _SQLITE_    
     sql_getValue(pWebDb, "LAN", "IpAddress", 1, &pLanIpAddr);
     sql_getValue(pWebDb, "MacTable", "MacAddress", 1, &pLanMACAddr);
     //printf("%s, %s, %s\n", __func__, pLanIpAddr, pLanMACAddr);
     res = send_arp_request(pLanIpAddr, pLanMACAddr, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
    // printf("arp_result=%d\n", res);
-
+#endif
 
     if (!res)
     {
-        if (pLanIpAddr) free(pLanIpAddr);
-        if (pLanMACAddr) free(pLanMACAddr);
+  //      if (pLanIpAddr) free(pLanIpAddr);
+  //      if (pLanMACAddr) free(pLanMACAddr);
         return res;
     }
         
@@ -164,12 +179,12 @@ static int isARPReply(char *ipaddr)
 
     res = send_arp_request(pLanIpAddr, pLanMACAddr, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
 
-    if (pLanIpAddr) free(pLanIpAddr);
-    if (pLanMACAddr) free(pLanMACAddr);
+//    if (pLanIpAddr) free(pLanIpAddr);
+//    if (pLanMACAddr) free(pLanMACAddr);
     return res;  
 }
 
-static int scanDhcpLease()
+int scanDhcpLease()
     {
     FILE *fp;
     char tmpmac[30];
@@ -382,39 +397,32 @@ int extArpScanby()
  */
 
 void scanAttachedDevice()
-    {
-    char sysCmd[256];
-
-    snprintf(sysCmd, sizeof(sysCmd), "sqlite3 /tmp/system.db \"delete from attacheddevice\"");
-    system(sysCmd);
-
+{
+    char sysCmd[MAX_STRING_SIZE];
+    
     /* Step 1:
     To list all dhcp client, it will cover most client list, whatever WiFi or wired.
     */
-
-    if (0 == just_count)
-        {
-        if (0 != scanDhcpLease())
-            printf("scan dhcplease fail...\n");
+//    if (0 != scanDhcpLease())
+//	printf("scan dhcplease fail...\n");
     
-        /* Step 2:
-        To scan wifi associated list, to find out if any wifi user using static IP address.
-        Need to 1) use RARP to get corresponding IP address, 2) send a name query packet to 
-        obtain its hostname if possible.
-        */
-        if (0 != scanWiFiAssoc())
-            printf("scan WiFiAssoc fail...\n");       
+    /* Step 2:
+    To scan wifi associated list, to find out if any wifi user using static IP address.
+    Need to 1) use RARP to get corresponding IP address, 2) send a name query packet to 
+    obtain its hostname if possible.
+    */
+//    if (0 != scanWiFiAssoc())
+//        printf("scan WiFiAssoc fail...\n");       
     
-        /* Step 3:
-        To scan ARP table, to find out if any wired user using static IP address.
-        Need 1) send a name query packet to obtain its hostname if possible.
-        */
-        }
-        if (0 != scanARPtable())
-            {
-            printf("scan ARP table fail...\n");     
-            }
+    /* Step 3:
+    To scan ARP table, to find out if any wired user using static IP address.
+    Need 1) send a name query packet to obtain its hostname if possible.
+    */
+    if (0 != scanARPtable())
+    {
+        printf("scan ARP table fail...\n");     
     }
+}
 
  /**
  * @brief transfer mac to if name function

@@ -54,3 +54,8 @@ int PLATFORM_ThreadCancel(struct platformThread_t* tPlatform)
 	else
 		return 0;
 }
+
+void PLATFORM_printf(char *msg)
+{
+    printf(msg);
+}
