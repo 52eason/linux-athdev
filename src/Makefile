@@ -6,8 +6,10 @@
 
 #include ../../../common.mak
 
+CC=arm-brcm-linux-uclibcgnueabi-gcc
 
-CFLAGS = ${INCDIR} -D_X86_
+CFLAGS = ${INCDIR} 
+#CFLAGS += -D_X86_
 #CFLAGS += -I../h 
 
 LDFLAGS += ${LDDIR} -lpthread

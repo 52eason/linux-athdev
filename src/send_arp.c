@@ -80,8 +80,17 @@ volobuev@t1.chem.umn.edu
 
 
 #define ETH_HW_ADDR_LEN 6
-#define DEFAULT_DEVICE "br0"
 
+#ifdef _X86_
+#define DEVICE "eth1"
+#else
+#define DEVICE "br0"
+#endif
+
+int sock = -1; /*Socketdescriptor*/
+void* buffer = NULL;
+long total_packets = 0;
+long answered_packets = 0;
 #define BUFF_SIZE 2048
 #define ETH_HDR_LEN 14
 
@@ -144,26 +153,128 @@ int	ioctl_sock;
 int arp_reply = -1;
 int rarp_reply = -1;
 
+void sigint(int signum) {
+        /*Clean up.......*/
+ 
+        struct ifreq ifr;
+ 
+        if (sock == -1)
+                return;
+ 
+        strncpy(ifr.ifr_name, DEVICE, IFNAMSIZ);
+        ioctl(sock, SIOCGIFFLAGS, &ifr);
+        ifr.ifr_flags &= ~IFF_PROMISC;
+        ioctl(sock, SIOCSIFFLAGS, &ifr);
+        close(sock);
+ 
+        free(buffer);
+ 
+        printf("Server terminating....\n");
+ 
+        printf("Totally received: %ld packets\n", total_packets);
+        printf("Answered %ld packets\n", answered_packets);
+        exit(0);
+}
+
+int
+send_arp_request_2(char * sip, char * smac, char * tip, char * tmac, int number)
+{
+	struct in_addr src_in_addr, targ_in_addr;
+	struct arp_packet pkt;
+	struct sockaddr sa;
+	int err;
+ 	int i=0, j=0;
+ 	int recvd_size=0;
+ 	/* buf is buffer containing the ethernet frame */
+	char buf[65535];
+	struct ethernet *eth_hdr = NULL;
+	struct arp *arp_hdr = NULL;
+	arp_reply = -1;
+
+ 	//sock = socket(AF_INET, SOCK_PACKET, htons(ETH_P_RARP));
+	sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	if (sock < 0)        
+		{                 
+		perror("socket");                
+		return -1;        
+		}
+      
+ 	pkt.frame_type = htons(ARP_FRAME_TYPE);        
+ 	pkt.hw_type = htons(ETHER_HW_TYPE);        
+ 	pkt.prot_type = htons(IP_PROTO_TYPE);        
+ 	pkt.hw_addr_size = MAC_ADDR_LEN;        
+ 	pkt.prot_addr_size = IP_ADDR_LEN;        
+ 	pkt.op = htons(OP_ARP_REQUEST);         
+ 	get_hw_addr(pkt.targ_hw_addr, tmac);        
+ 	get_hw_addr(pkt.rcpt_hw_addr, tmac);        
+ 	get_hw_addr(pkt.src_hw_addr, smac);        
+ 	get_hw_addr(pkt.sndr_hw_addr, smac);        
+ 	get_ip_addr(&src_in_addr, sip);        
+ 	get_ip_addr(&targ_in_addr, tip);        
+ 	memcpy(pkt.sndr_ip_addr, &src_in_addr, IP_ADDR_LEN);        
+ 	memcpy(pkt.rcpt_ip_addr, &targ_in_addr, IP_ADDR_LEN);        
+ 	bzero(pkt.padding, 18);         
+ 	strcpy(sa.sa_data, DEVICE);  
+	
+	/*establish signal handler*/
+        signal(SIGINT, sigint);
+        printf("Successfully established signal handler for SIGINT\n");
+        printf("We are in production state, waiting for incoming packets....\n");
+
+	while(1)
+	{
+	    if( (recvd_size = recv(sock, buffer, BUFF_SIZE, 0)) < 0)
+	    {
+		perror("recv(): ");
+		free(buffer);
+		close(sock);
+	    }
+	    if((size_t)recvd_size < (sizeof(struct ethernet) + sizeof(struct arp)))
+	    {
+		printf("Short packet. Packet len: %ld\n", recvd_size);
+		continue;
+	    }
+	    eth_hdr = (struct ethernet *)buffer;
+	    if(ntohs(eth_hdr->eth_type) != ETH_P_ARP) 
+	    {
+		printf("Received wrong ethernet type: %X\n", eth_hdr->eth_type);
+	    }          
+	    arp_hdr = (struct arp *)(buffer+ETH_HDR_LEN);
+	    //dump_arp(arp_hdr);
+	    
+	    sendto(sock, &pkt, sizeof(pkt), 0, &sa, sizeof(sa));
+	    //answered_packets++;
+	}      
+
+	   
+	      
+}
+
+/** Creating a thread to wait ARP reply**/
 void rev_arp_reply()
 {
-   int sock;
+    int rsock;
     void *buffer = NULL;
     ssize_t recvd_size;
     struct ethernet *eth_hdr = NULL;
     struct arp *arp_hdr = NULL;
     struct sock_filter *filter;
     struct sock_fprog  fprog;
-
-    if( (sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1)
+    struct arp_packet pkt;
+    struct sockaddr sa;
+    
+    printf("%s\n", __func__);
+ 
+    if( (rsock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == -1)
     {
         perror("socket(): ");
         exit(-1);
     }
-
+ 
     /* CHANGE prepare linux packet filter */
     if ((filter = malloc(sizeof(arpfilter))) == NULL) {
         perror("malloc");
-        close(sock);
+        close(rsock);
         exit(1);
     }
     memcpy(filter, &arpfilter, sizeof(arpfilter));
@@ -171,21 +282,22 @@ void rev_arp_reply()
     fprog.len = sizeof(arpfilter)/sizeof(struct sock_filter);
 
     /* CHANGE add filter */
-    if (setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &fprog, sizeof(fprog)) == -1) {
+    if (setsockopt(rsock, SOL_SOCKET, SO_ATTACH_FILTER, &fprog, sizeof(fprog)) == -1) {
         perror("setsockopt");
         close(sock);
         exit(1);
     }
-
     buffer = malloc(BUFF_SIZE);
     while(1)
     {
-        if( (recvd_size = recv(sock, buffer, BUFF_SIZE, 0)) < 0)
+        if( (recvd_size = recv(rsock, buffer, BUFF_SIZE, 0)) < 0)
         {
             perror("recv(): ");
             free(buffer);
             close(sock);
+	    exit(1);
         }
+        
         if((size_t)recvd_size < (sizeof(struct ethernet) + sizeof(struct arp)))
         {
             printf("Short packet. Packet len: %ld\n", recvd_size);
@@ -196,10 +308,104 @@ void rev_arp_reply()
             printf("Received wrong ethernet type: %X\n", eth_hdr->eth_type);
         }          
         arp_hdr = (struct arp *)(buffer+ETH_HDR_LEN);
-   		dump_arp(arp_hdr);
+	printf("Recv.\n");
+	sendto(rsock, &pkt, sizeof(pkt), 0, &sa, sizeof(sa));
+   	//	dump_arp(arp_hdr);
     }
     free(buffer);
     close(sock);
+}
+
+int
+send_arp_request(char * sip, char * smac, char * tip, char * tmac, int number)
+{
+	struct in_addr src_in_addr, targ_in_addr;
+	struct arp_packet pkt;
+	struct sockaddr sa;
+	int err;
+ 	int i=0, j=0;
+ 	int recvd_size=0;
+ 	/* buf is buffer containing the ethernet frame */
+	char buf[65535];
+	struct ethernet *eth_hdr = NULL;
+	struct arp *arp_hdr = NULL;
+	arp_reply = -1;
+
+	// create a thread to handle receive ARP reply
+	struct platformThread_t Platform;
+	Platform.pfFnStartRoutine = (void*) rev_arp_reply;
+	PLATFORM_ThreadCreate(&Platform);	
+
+	PLATFORM_SleepMSec(100);
+
+	sock = socket(AF_INET, SOCK_PACKET, htons(ETH_P_RARP));
+	if (sock < 0)        
+		{                 
+		perror("socket");                
+		return -1;        
+		}
+      
+ 	pkt.frame_type = htons(ARP_FRAME_TYPE);        
+ 	pkt.hw_type = htons(ETHER_HW_TYPE);        
+ 	pkt.prot_type = htons(IP_PROTO_TYPE);        
+ 	pkt.hw_addr_size = MAC_ADDR_LEN;        
+ 	pkt.prot_addr_size = IP_ADDR_LEN;        
+ 	pkt.op = htons(OP_ARP_REQUEST);         
+ 	get_hw_addr(pkt.targ_hw_addr, tmac);        
+ 	get_hw_addr(pkt.rcpt_hw_addr, tmac);        
+ 	get_hw_addr(pkt.src_hw_addr, smac);        
+ 	get_hw_addr(pkt.sndr_hw_addr, smac);        
+ 	get_ip_addr(&src_in_addr, sip);        
+ 	get_ip_addr(&targ_in_addr, tip);        
+ 	memcpy(pkt.sndr_ip_addr, &src_in_addr, IP_ADDR_LEN);        
+ 	memcpy(pkt.rcpt_ip_addr, &targ_in_addr, IP_ADDR_LEN);        
+ 	bzero(pkt.padding, 18);         
+ 	strcpy(sa.sa_data, DEVICE); 
+
+ 	for (j = 0; j < number; j++)        
+ 		{                 
+ 		if (sendto(sock, &pkt, sizeof(pkt), 0, &sa, sizeof(sa)) < 0)                
+ 			{                         
+ 			perror("sendto");                        
+ 			exit(1);                
+ 			}        
+ 		}
+	/*establish signal handler*/
+       // signal(SIGINT, sigint);
+        printf("Successfully established signal handler for SIGINT\n");
+        printf("We are in production state, waiting for incoming packets....\n");
+
+ 		
+	//receive ARP part
+	buffer = malloc(BUFF_SIZE);
+	while(1)
+	{
+        if( (recvd_size = recv(sock, buffer, BUFF_SIZE, 0)) < 0)
+        {
+            perror("recv(): ");
+            free(buffer);
+            close(sock);
+	    exit(1);
+        }
+        
+        if((size_t)recvd_size < (sizeof(struct ethernet) + sizeof(struct arp)))
+        {
+            printf("Short packet. Packet len: %ld\n", recvd_size);
+            continue;
+        }
+        eth_hdr = (struct ethernet *)buffer;
+        if(ntohs(eth_hdr->eth_type) != ETH_P_ARP) {
+            printf("Received wrong ethernet type: %X\n", eth_hdr->eth_type);
+        }          
+        arp_hdr = (struct arp *)(buffer+ETH_HDR_LEN);
+	//printf("Recv.\n");
+	sendto(sock, &pkt, sizeof(pkt), 0, &sa, sizeof(sa));
+   	//	dump_arp(arp_hdr);
+	PLATFORM_SleepMSec(100);
+	} 
+ 
+	close(sock);	// close send arp sock
+ 	return arp_reply;
 }
 
 void rev_rarp_reply()
@@ -261,64 +467,6 @@ void rev_rarp_reply()
 }
 
 int
-send_arp_request(char * sip, char * smac, char * tip, char * tmac, int number)
-{
-	struct in_addr src_in_addr, targ_in_addr;
-	struct arp_packet pkt;
-	struct sockaddr sa;
-	int sock, err;
- 	int i=0, j=0;
- 	int recvd_size=0;
- 	/* buf is buffer containing the ethernet frame */
-	char buf[65535];
-	struct ethernet *eth_hdr = NULL;
-	struct arp *arp_hdr = NULL;
-	arp_reply = -1;
-
-	// create a thread to handle receive ARP reply
-	struct platformThread_t Platform;
-	Platform.pfFnStartRoutine = (void*) rev_arp_reply;
-	PLATFORM_ThreadCreate(&Platform);	
-
-	PLATFORM_SleepMSec(100);
-
-	sock = socket(AF_INET, SOCK_PACKET, htons(ETH_P_RARP));
-	if (sock < 0)        
-		{                 
-		perror("socket");                
-		return -1;        
-		}
-      
- 	pkt.frame_type = htons(ARP_FRAME_TYPE);        
- 	pkt.hw_type = htons(ETHER_HW_TYPE);        
- 	pkt.prot_type = htons(IP_PROTO_TYPE);        
- 	pkt.hw_addr_size = MAC_ADDR_LEN;        
- 	pkt.prot_addr_size = IP_ADDR_LEN;        
- 	pkt.op = htons(OP_ARP_REQUEST);         
- 	get_hw_addr(pkt.targ_hw_addr, tmac);        
- 	get_hw_addr(pkt.rcpt_hw_addr, tmac);        
- 	get_hw_addr(pkt.src_hw_addr, smac);        
- 	get_hw_addr(pkt.sndr_hw_addr, smac);        
- 	get_ip_addr(&src_in_addr, sip);        
- 	get_ip_addr(&targ_in_addr, tip);        
- 	memcpy(pkt.sndr_ip_addr, &src_in_addr, IP_ADDR_LEN);        
- 	memcpy(pkt.rcpt_ip_addr, &targ_in_addr, IP_ADDR_LEN);        
- 	bzero(pkt.padding, 18);         
- 	strcpy(sa.sa_data, DEFAULT_DEVICE); 
-
- 	for (j = 0; j < number; j++)        
- 		{                 
- 		if (sendto(sock, &pkt, sizeof(pkt), 0, &sa, sizeof(sa)) < 0)                
- 			{                         
- 			perror("sendto");                        
- 			exit(1);                
- 			}        
- 		}
- 	close(sock);	// close send arp sock
- 	return arp_reply;
-}
-
-int
 send_rarp_request(char * sip, char * smac, char * tip, char * tmac, int number)
 {
 	struct in_addr src_in_addr, targ_in_addr;
@@ -368,7 +516,7 @@ send_rarp_request(char * sip, char * smac, char * tip, char * tmac, int number)
  	memcpy(pkt.sndr_ip_addr, &src_in_addr, IP_ADDR_LEN);        
  	//memcpy(pkt.rcpt_ip_addr, &targ_in_addr, IP_ADDR_LEN);        
  	bzero(pkt.padding, 18);         
- 	strcpy(sa.sa_data, DEFAULT_DEVICE); 
+ 	strcpy(sa.sa_data, DEVICE); 
 
  	for (j = 0; j < number; j++)        
  		{                 
@@ -398,13 +546,16 @@ void get_ip_addr(struct in_addr* in_addr,char* str)
 		{                 
 			if ((hostp = gethostbyname(str)))                
 				{                         
-					bcopy(hostp->h_addr, in_addr, hostp->h_length);                
+					bcopy(hostp->h_addr, in_addr, hostp->h_length);       
+					printf("%s => %s\n", str, in_addr);
 				}                
+			/*
 			else                
 				{                         
 					fprintf(stderr, "send_arp: unknown host %s\n", str);                        
 					exit(1);                
-				}        
+				}
+			*/
 		}
 }
 
@@ -458,6 +609,7 @@ void get_hw_addr(u_char* buf,char* str)
 				}        
 		}
 }
+
 
 #if 0
 static void

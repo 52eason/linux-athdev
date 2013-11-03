@@ -51,8 +51,9 @@ unsigned char hostname[64];
   sqlite3 * pWebDb;
 #endif
 
-int just_count = 0;
-int debug = 0;
+unsigned int just_count = 0;
+unsigned int debug = 0;
+unsigned int type = 0;
 
 static char * ip2host( char *ip );
 static char *mac2if(char *mac);
@@ -111,7 +112,7 @@ int main(int argc, char ** argv)
 
     if(argc)
     {
-        while ((c = getopt(argc, argv, "lvds")) != -1)
+        while ((c = getopt(argc, argv, "lvdhwas")) != -1)
         {
             switch (c) 
 	    {
@@ -121,7 +122,16 @@ int main(int argc, char ** argv)
             case 'd':
                 debug = 1;
                 break;
-            case 'v':
+            case 'h':
+                type = 1;
+                break;
+            case 'w':
+                type = 2;
+                break;
+            case 'a':
+                type = 3;
+                break;		
+	    case 'v':
                 snprintf(sysCmd, sizeof(sysCmd), "Attachded device utility %s.\n", VERSION);
 		PLATFORM_printf(sysCmd);
                 break;
@@ -180,9 +190,7 @@ int isARPReply(char *ipaddr)
     /* I want IP address attached to "eth0" */
     strncpy(ifr.ifr_name, LANIF, IFNAMSIZ-1);
     ioctl(fd, SIOCGIFADDR, &ifr);
- 
-    printf("%s\n", inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));    
-    
+     
     snprintf(ethIP, sizeof(ethIP),"%s", inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
     snprintf(ethMAC, sizeof(ethMAC), "%02X:%02X:%02X:%02X:%02X:%02X", 
 	    (unsigned char) ifr.ifr_addr.sa_data[0], 
@@ -194,8 +202,14 @@ int isARPReply(char *ipaddr)
 
     close(fd);
    
-    PLATFORM_SleepMSec(500);  // According to spec, wait 500ms then resend if first arp doesn't reply
-    res = send_arp_request(ethMAC, ethMAC, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
+    res = send_arp_request(ethIP, ethMAC, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
+    
+    if (!res)
+    {
+	printf("resent ARP request -> %s\n");
+	PLATFORM_SleepMSec(500);  // According to spec, wait 500ms then resend if first arp doesn't reply
+	res = send_arp_request_2(ethIP, ethMAC, ipaddr, "FF:FF:FF:FF:FF:FF", 1);
+    }
     return res;  
 }
 
@@ -313,7 +327,6 @@ int scanWiFiAssoc()
     int i = 0;
     int res = -1;
 
-/*
     snprintf(sysCmd, sizeof(sysCmd), "wl -i eth1 assoclist");
 
     if ((p = popen(sysCmd, "r")) != NULL)
@@ -331,7 +344,6 @@ int scanWiFiAssoc()
                 }
             pclose(p);
         }
-*/
     return 0;
     }
 
@@ -369,8 +381,6 @@ int scanARPtable()
 
                 //CliIF: wired/radio1/guest1/radio2/guest2
                 //sqlite+ /tmp/system.db "insert into AttachedDevice (AttchedType, IpAddress, MacAddress, DeviceName) values ('$CliIF', '"$2"', '"$3"', '"$1"')";
-
-		printf("!!!!!!!!!!!!%d\n", isARPReply(ip));
                 if (!isARPReply(ip))
                     {
 #ifdef _SQLITE_		      
@@ -422,26 +432,34 @@ void scanAttachedDevice()
     char sysCmd[MAX_STRING_SIZE];
     
     /* Step 1:
-    To list all dhcp client, it will cover most client list, whatever WiFi or wired.
-    */
-//    if (0 != scanDhcpLease())
-//	printf("scan dhcplease fail...\n");
-    
-    /* Step 2:
     To scan wifi associated list, to find out if any wifi user using static IP address.
     Need to 1) use RARP to get corresponding IP address, 2) send a name query packet to 
     obtain its hostname if possible.
     */
-//    if (0 != scanWiFiAssoc())
-//        printf("scan WiFiAssoc fail...\n");       
+    if ( 2 == type || 4 == type)
+    {
+	if (0 != scanWiFiAssoc())
+	    printf("scan WiFiAssoc fail...\n");       
+    }
     
+    /* Step 2:
+    To list all dhcp client, it will cover most client list, whatever WiFi or wired.
+    */
+    if ( 1 == type || 4 == type)
+    {
+	if (0 != scanDhcpLease())
+	    printf("scan dhcplease fail...\n");
+    }
+
     /* Step 3:
     To scan ARP table, to find out if any wired user using static IP address.
     Need 1) send a name query packet to obtain its hostname if possible.
     */
-    if (0 != scanARPtable())
+    
+    if ( 1 == type || 4 == type)
     {
-        printf("scan ARP table fail...\n");     
+	if (0 != scanARPtable())
+	    printf("scan ARP table fail...\n");     
     }
 }
 
